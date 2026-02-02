@@ -4,7 +4,7 @@
 
 # Pi Web Access
 
-An extension for [Pi coding agent](https://github.com/badlogic/pi-mono/) that gives Pi web capabilities: search via Perplexity AI, fetch and extract content from URLs, and read PDFs.
+An extension for [Pi coding agent](https://github.com/badlogic/pi-mono/) that gives Pi web capabilities: search via Perplexity AI, fetch and extract content from URLs, clone GitHub repos for local exploration, and read PDFs.
 
 ```typescript
 web_search({ query: "TypeScript best practices 2025" })
@@ -74,6 +74,25 @@ fetch_content({ url: "https://arxiv.org/pdf/1706.03762" })
 // → "PDF extracted and saved to: ~/Downloads/arxiv-170603762.md"
 ```
 
+**GitHub repos:** GitHub code URLs are automatically detected and cloned locally instead of scraping HTML. The agent gets actual file contents and a local path to explore with `read` and `bash`.
+
+```typescript
+// Clone a repo - returns structure + README
+fetch_content({ url: "https://github.com/owner/repo" })
+// → "Repository cloned to: /tmp/pi-github-repos/owner/repo"
+
+// Specific file - returns file contents
+fetch_content({ url: "https://github.com/owner/repo/blob/main/src/index.ts" })
+
+// Directory - returns listing
+fetch_content({ url: "https://github.com/owner/repo/tree/main/src" })
+
+// Force-clone a large repo that exceeds the size threshold
+fetch_content({ url: "https://github.com/big/repo", forceClone: true })
+```
+
+Repos over 350MB get a lightweight API-based view instead of a full clone. Commit SHA URLs are also handled via the API. Clones are cached for the session -- multiple files from the same repo share one clone, but clones are wiped on session change/shutdown and re-cloned as needed.
+
 **PDF handling:** When fetching a PDF URL, the extension extracts text and saves it as a markdown file in `~/Downloads/`. The agent can then use `read` to access specific sections without loading 200K+ chars into context.
 
 ### get_search_content
@@ -93,7 +112,7 @@ get_search_content({ responseId: "abc123", query: "original query" })
 
 ## Features
 
-### Activity Monitor (Ctrl+Shift+O)
+### Activity Monitor (Ctrl+Shift+W)
 
 Toggle live request/response activity:
 
@@ -129,24 +148,66 @@ Browse stored search results interactively.
 
 ## How It Works
 
+### fetch_content routing
+
+```
+fetch_content(url)
+       │
+       ├── github.com code URL? ──→ Clone repo (gh/git --depth 1)
+       │                                    │
+       │                            ┌───────┼───────┐
+       │                            ↓       ↓       ↓
+       │                          root    tree     blob
+       │                            ↓       ↓       ↓
+       │                         tree +   dir     file
+       │                         README  listing  contents
+       │                            │       │       │
+       │                            └───────┼───────┘
+       │                                    ↓
+       │                           Return content + local
+       │                           path for read/bash
+       │
+       ├── PDF? ──→ unpdf → Save to ~/Downloads/
+       │
+       ├── Plain text? ──→ Return directly
+       │
+       └── HTML ──→ Readability → Markdown
+                         │
+                    [if fails]
+                         ↓
+                    RSC Parser → Markdown
+```
+
+### web_search with includeContent
+
 ```
 Agent Request → Perplexity API → Synthesized Answer + Citations
                                          ↓
                               [if includeContent: true]
                                          ↓
                               Background Fetch (3 concurrent)
-                                         ↓
-                        ┌────────────────┼────────────────┐
-                        ↓                ↓                ↓
-                       PDF          HTML/Text          RSC
-                        ↓                ↓                ↓
-                   unpdf →        Readability →    RSC Parser →
-                 Save to file      Markdown          Markdown
-                        ↓                ↓                ↓
-                        └────────────────┼────────────────┘
+                              (uses same routing as above)
                                          ↓
                               Agent Notification (triggerTurn)
 ```
+
+## Configuration
+
+All config lives in `~/.pi/web-search.json`:
+
+```json
+{
+  "perplexityApiKey": "pplx-...",
+  "githubClone": {
+    "enabled": true,
+    "maxRepoSizeMB": 350,
+    "cloneTimeoutSeconds": 30,
+    "clonePath": "/tmp/pi-github-repos"
+  }
+}
+```
+
+All `githubClone` fields are optional with the defaults shown above. Set `"enabled": false` to disable GitHub cloning entirely and fall through to normal HTML extraction.
 
 ## Rate Limits
 
@@ -161,6 +222,8 @@ Agent Request → Perplexity API → Synthesized Answer + Citations
 | `index.ts` | Extension entry, tool definitions, commands, widget |
 | `perplexity.ts` | Perplexity API client, rate limiting |
 | `extract.ts` | URL fetching, content extraction routing |
+| `github-extract.ts` | GitHub URL parser, clone cache, content generation |
+| `github-api.ts` | GitHub API fallback for oversized repos and commit SHAs |
 | `pdf-extract.ts` | PDF text extraction, saves to markdown |
 | `rsc-extract.ts` | RSC flight data parser for Next.js pages |
 | `storage.ts` | Session-aware result storage |
@@ -173,4 +236,7 @@ Agent Request → Perplexity API → Synthesized Answer + Citations
 - PDFs are extracted as text (no OCR for scanned documents)
 - Max response size: 20MB for PDFs, 5MB for HTML
 - Max inline content: 30,000 chars per URL (larger content stored for retrieval via get_search_content)
+- GitHub cloning requires `gh` CLI for private repos (public repos fall back to `git clone`)
+- GitHub branch names with slashes (e.g. `feature/foo`) may resolve the wrong file path; the clone still succeeds and the agent can navigate manually
+- Non-code GitHub URLs (issues, PRs, wiki, etc.) fall through to normal Readability extraction
 - Requires Pi restart after config file changes
