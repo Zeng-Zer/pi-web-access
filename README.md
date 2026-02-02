@@ -41,7 +41,7 @@ Search the web via Perplexity AI. Returns synthesized answer with source citatio
 // Single query
 web_search({ query: "rust async programming" })
 
-// Multiple queries (parallel)
+// Multiple queries (batch)
 web_search({ queries: ["query 1", "query 2"] })
 
 // With options
