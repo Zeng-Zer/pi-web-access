@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-02-18
+
+### Added
+- **Interactive search curation.** Press Ctrl+S during or after a multi-query search to open a browser-based review UI. Results stream in live via SSE. Pick which queries to keep, add new searches on the fly, switch providers — then submit to send only the curated results to the agent.
+- **Auto-condense pipeline.** When the countdown expires without Ctrl+S, a single LLM call (Claude Haiku by default) condenses all search results into a deduplicated briefing organized by topic. Preprocessing enriches the prompt with URL overlap, answer similarity, and source quality analysis. Configure via `"autoFilter"` in `~/.pi/web-search.json`. Full uncondensed results stored and retrievable via `get_search_content`.
+- **`/websearch` command** — opens the curator directly from pi without an agent round-trip. Accepts optional comma-separated queries or opens empty.
+- **Task-aware condensation.** Optional `context` parameter on `web_search` — a brief description of the user's task. The condenser uses it to focus the briefing on what matters.
+- **Provider selection** — global dropdown in the curator UI to switch between Perplexity and Gemini. Persists to `~/.pi/web-search.json`.
+- **Live condense status in countdown.** Shows "condensing..." while the LLM is working, then "N searches condensed" once complete.
+- Markdown rendering in curator result cards via marked.js.
+- Query-level result cards with expandable answers and source lists. Check/uncheck to include or exclude.
+- SSE streaming with keepalive, socket health checks, and buffered delivery.
+- Idle-based timer (60s default, adjustable). Timeout sends all results as safe default.
+- Keyboard shortcuts: Enter (submit), Escape (skip), A (toggle all).
+- Dark/light theme via `prefers-color-scheme` with teal accent palette.
+
+### Changed
+- **Curate enabled by default.** Multi-query searches show a 10-second review window; single queries send immediately. Pass `curate: false` to opt out.
+- **Ctrl+S opens browser immediately, even mid-search.** Remaining results stream in live via SSE.
+- **Tool descriptions encourage multi-query research.** The `queries` param explains how to vary phrasing and scope across 2-4 queries, with good/bad examples.
+- **Curated results instruct the LLM.** Tool output prefixed with an instruction telling the LLM to use curated results as-is.
+- Expanded view shows full answer text per query with source titles and domains.
+- Non-curated `web_search` calls now respect the saved provider preference.
+- Config helpers generalized from `loadSavedProvider`/`saveProvider` to `loadConfig`/`saveConfig`.
+
+### Fixed
+- Curated `onSubmit` passed the original full query list instead of the filtered list, inflating `queryCount`.
+- Collapsed curated status mixed source URL counts with query counts.
+
+### New files
+- `curator-server.ts` — ephemeral HTTP server with SSE streaming, state machine, heartbeat watchdog, and token auth.
+- `curator-page.ts` — HTML/CSS/JS for the curator UI with markdown rendering and overlay transitions.
+- `search-filter.ts` — auto-condense pipeline: preprocessing, LLM condensation via pi's model registry, and post-processing (citation verification, source list completion).
+
 ## [0.7.3] - 2026-02-05
 
 ### Added

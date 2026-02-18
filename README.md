@@ -82,6 +82,7 @@ web_search({ query: "latest news", numResults: 10, recencyFilter: "week" })
 web_search({ query: "...", domainFilter: ["github.com"] })
 web_search({ query: "...", provider: "gemini" })
 web_search({ query: "...", includeContent: true })
+web_search({ queries: ["query 1", "query 2"], curate: true })
 ```
 
 | Parameter | Description |
@@ -92,6 +93,7 @@ web_search({ query: "...", includeContent: true })
 | `domainFilter` | Limit to domains (prefix with `-` to exclude) |
 | `provider` | `auto` (default), `perplexity`, or `gemini` |
 | `includeContent` | Fetch full page content from sources in background |
+| `curate` | Hold results for browser review (default: true for multi-query). Press Ctrl+S to open browser UI, or wait for countdown to auto-condense and send. Set to false to skip both curation and condensation. |
 
 ### fetch_content
 
@@ -186,6 +188,17 @@ Bundled research workflow for investigating open-source libraries. Combines GitH
 
 ## Commands
 
+### /websearch
+
+Open the search curator directly in the browser. Runs searches and lets you review, add, and select results to send back to the agent — no LLM round-trip needed.
+
+```
+/websearch                                    # empty page, type your own searches
+/websearch react hooks, next.js caching       # pre-fill with comma-separated queries
+```
+
+Results get injected into the conversation when you click Send. The agent sees them and can use them immediately.
+
 ### /search
 
 Browse stored search results interactively. Lists all results from the current session with their response IDs for easy retrieval.
@@ -210,7 +223,9 @@ All config lives in `~/.pi/web-search.json`. Every field is optional.
 {
   "perplexityApiKey": "pplx-...",
   "geminiApiKey": "AIza...",
-  "searchProvider": "auto",
+  "provider": "perplexity",
+  "curateWindow": 10,
+  "autoFilter": true,
   "githubClone": {
     "enabled": true,
     "maxRepoSizeMB": 350,
@@ -229,7 +244,35 @@ All config lives in `~/.pi/web-search.json`. Every field is optional.
 }
 ```
 
-`GEMINI_API_KEY` and `PERPLEXITY_API_KEY` env vars take precedence over config file values. `searchProvider` sets the `web_search` default: `"auto"`, `"perplexity"`, or `"gemini"`. Set `"enabled": false` under any feature to disable it. Config changes require a Pi restart.
+`GEMINI_API_KEY` and `PERPLEXITY_API_KEY` env vars take precedence over config file values. `provider` sets the default search provider: `"perplexity"` or `"gemini"`. This is also updated automatically when you change the provider in the curator UI. `curateWindow` controls how many seconds multi-query searches wait before auto-sending results (default: 10). During the countdown, press Ctrl+S to open the browser curator. Set to 0 to always send immediately (Ctrl+S still works during the search itself).
+
+### Auto-Condense
+
+Multi-query searches are automatically condensed into a deduplicated briefing when the countdown expires without Ctrl+S. A single LLM call receives all search results — enriched with preprocessing analysis (URL overlap, answer similarity, source quality tiers) — and produces a concise synthesis organized by topic. Irrelevant or off-topic results are skipped automatically.
+
+```json
+{
+  "autoFilter": {
+    "enabled": true,
+    "model": "anthropic/claude-haiku-4-5",
+    "prompt": "You are a research assistant..."
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `enabled` | `true` to enable, `false` to disable. Omit `autoFilter` entirely to enable with defaults. |
+| `model` | LLM model in `provider/model` format. Uses pi's model registry for auth. Default: `anthropic/claude-haiku-4-5`. |
+| `prompt` | System prompt for the condenser. Should instruct the model to synthesize, deduplicate, and cite sources. Omit to use the built-in prompt. |
+
+Shorthand: `"autoFilter": true` or `"autoFilter": false` for enable/disable without customizing model or prompt.
+
+The model uses pi's model registry, so any configured provider works — including custom gateways, OAuth tokens, and API keys. If the model isn't found in the registry or has no credentials, condensation is silently skipped.
+
+The `web_search` tool also accepts an optional `context` parameter — a brief description of the user's current task or goal. When provided, the condenser uses it to focus the briefing (e.g., "building a Shopify checkout extension" helps it emphasize relevant findings over general noise).
+
+Set `"enabled": false` under any feature to disable it. Config changes require a Pi restart.
 
 Rate limits: Perplexity is capped at 10 requests/minute (client-side). Content fetches run 3 concurrent with a 30s timeout per URL.
 
@@ -248,6 +291,9 @@ Rate limits: Perplexity is capped at 10 requests/minute (client-side). Content f
 | File | Purpose |
 |------|---------|
 | `index.ts` | Extension entry, tool definitions, commands, widget |
+| `curator-page.ts` | HTML/CSS/JS generation for the curator UI with markdown rendering |
+| `curator-server.ts` | Ephemeral HTTP server with SSE streaming and state machine |
+| `search-filter.ts` | Auto-condense pipeline — preprocessing, LLM condensation, and post-processing for multi-query results |
 | `extract.ts` | URL/file path routing, HTTP extraction, fallback orchestration |
 | `gemini-search.ts` | Search routing across Perplexity, Gemini API, Gemini Web |
 | `gemini-url-context.ts` | Gemini URL Context + Web extraction fallbacks |
