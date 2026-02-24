@@ -6,6 +6,9 @@ import { join } from "node:path";
 
 export type CookieMap = Record<string, string>;
 
+// Required cookies for Gemini authentication
+export const REQUIRED_COOKIES = ["__Secure-1PSID", "__Secure-1PSIDTS"];
+
 const GOOGLE_ORIGINS = [
 	"https://gemini.google.com",
 	"https://accounts.google.com",
@@ -33,62 +36,96 @@ const ALL_COOKIE_NAMES = new Set([
 	"SIDCC",
 ]);
 
-const CHROME_COOKIES_PATH = join(
-	homedir(),
-	"Library/Application Support/Google/Chrome/Default/Cookies",
-);
+interface BrowserConfig {
+	name: string;
+	cookiePath: string;
+	keychainService: string;
+}
 
-export async function getGoogleCookies(): Promise<{ cookies: CookieMap; warnings: string[] } | null> {
+const BROWSER_CONFIGS: BrowserConfig[] = [
+	{
+		name: "Chrome",
+		cookiePath: join(homedir(), "Library/Application Support/Google/Chrome/Default/Cookies"),
+		keychainService: "Chrome Safe Storage",
+	},
+	{
+		name: "Arc",
+		cookiePath: join(homedir(), "Library/Application Support/Arc/User Data/Default/Cookies"),
+		keychainService: "Arc Safe Storage",
+	},
+];
+
+export async function getGoogleCookies(browserName?: string): Promise<{ cookies: CookieMap; warnings: string[] } | null> {
 	if (platform() !== "darwin") return null;
-	if (!existsSync(CHROME_COOKIES_PATH)) return null;
 
 	const warnings: string[] = [];
+	const browsersToTry = browserName
+		? BROWSER_CONFIGS.filter(b => b.name.toLowerCase().includes(browserName.toLowerCase()))
+		: BROWSER_CONFIGS;
 
-	const password = await readKeychainPassword();
-	if (!password) {
-		warnings.push("Could not read Chrome Safe Storage password from Keychain");
-		return { cookies: {}, warnings };
-	}
+	for (const browser of browsersToTry) {
+		if (!existsSync(browser.cookiePath)) continue;
 
-	const key = pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
-	const tempDir = mkdtempSync(join(tmpdir(), "pi-chrome-cookies-"));
-
-	try {
-		const tempDb = join(tempDir, "Cookies");
-		copyFileSync(CHROME_COOKIES_PATH, tempDb);
-		copySidecar(CHROME_COOKIES_PATH, tempDb, "-wal");
-		copySidecar(CHROME_COOKIES_PATH, tempDb, "-shm");
-
-		const metaVersion = await readMetaVersion(tempDb);
-		const stripHash = metaVersion >= 24;
-
-		const hosts = GOOGLE_ORIGINS.map((o) => new URL(o).hostname);
-		const rows = await queryCookieRows(tempDb, hosts);
-		if (!rows) {
-			warnings.push("Failed to query Chrome cookie database");
-			return { cookies: {}, warnings };
+		const password = await readKeychainPassword(browser.keychainService);
+		if (!password) {
+			warnings.push(`Could not read ${browser.name} Safe Storage password from Keychain`);
+			continue;
 		}
 
-		const cookies: CookieMap = {};
-		for (const row of rows) {
-			const name = row.name as string;
-			if (!ALL_COOKIE_NAMES.has(name)) continue;
-			if (cookies[name]) continue;
+		const key = pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
+		const tempDir = mkdtempSync(join(tmpdir(), `pi-${browser.name.toLowerCase().replace(/\s+/g, "-")}-cookies-`));
 
-			let value = typeof row.value === "string" && row.value.length > 0 ? row.value : null;
-			if (!value) {
-				const encrypted = row.encrypted_value;
-				if (encrypted instanceof Uint8Array) {
-					value = decryptCookieValue(encrypted, key, stripHash);
-				}
+		try {
+			const tempDb = join(tempDir, "Cookies");
+			copyFileSync(browser.cookiePath, tempDb);
+			copySidecar(browser.cookiePath, tempDb, "-wal");
+			copySidecar(browser.cookiePath, tempDb, "-shm");
+
+			const metaVersion = await readMetaVersion(tempDb);
+			const stripHash = metaVersion >= 24;
+
+			const hosts = GOOGLE_ORIGINS.map((o) => new URL(o).hostname);
+			const rows = await queryCookieRows(tempDb, hosts);
+			if (!rows) {
+				warnings.push(`Failed to query ${browser.name} cookie database`);
+				continue;
 			}
-			if (value) cookies[name] = value;
-		}
 
-		return { cookies, warnings };
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
+			const cookies: CookieMap = {};
+			for (const row of rows) {
+				const name = row.name as string;
+				if (!ALL_COOKIE_NAMES.has(name)) continue;
+				if (cookies[name]) continue;
+
+				let value = typeof row.value === "string" && row.value.length > 0 ? row.value : null;
+				if (!value) {
+					const encrypted = row.encrypted_value;
+					if (encrypted instanceof Uint8Array) {
+						value = decryptCookieValue(encrypted, key, stripHash);
+					}
+				}
+				if (value) cookies[name] = value;
+			}
+
+			// Check if this browser has ALL required cookies for Gemini
+			const hasRequired = REQUIRED_COOKIES.every(name => cookies[name]);
+			if (hasRequired) {
+				return { cookies, warnings };
+			}
+
+			// Missing required cookies, try next browser
+			const missing = REQUIRED_COOKIES.filter(name => !cookies[name]).join(", ");
+			warnings.push(`${browser.name} missing required cookies: ${missing}`);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	}
+
+	// No browser had both required cookies
+	if (warnings.length === 0) {
+		warnings.push("No supported browser found with cookies");
+	}
+	return { cookies: {}, warnings };
 }
 
 function decryptCookieValue(encrypted: Uint8Array, key: Buffer, stripHash: boolean): string | null {
@@ -124,11 +161,11 @@ function removePkcs7Padding(buf: Buffer): Buffer {
 	return buf.subarray(0, buf.length - padding);
 }
 
-function readKeychainPassword(): Promise<string | null> {
+function readKeychainPassword(service: string): Promise<string | null> {
 	return new Promise((resolve) => {
 		execFile(
 			"security",
-			["find-generic-password", "-w", "-a", "Chrome", "-s", "Chrome Safe Storage"],
+			["find-generic-password", "-w", "-s", service],
 			{ timeout: 5000 },
 			(err, stdout) => {
 				if (err) { resolve(null); return; }

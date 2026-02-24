@@ -1,4 +1,4 @@
-import { type CookieMap, getGoogleCookies } from "./chrome-cookies.js";
+import { type CookieMap, getGoogleCookies, REQUIRED_COOKIES } from "./chrome-cookies.js";
 
 const GEMINI_APP_URL = "https://gemini.google.com/app";
 const GEMINI_STREAM_GENERATE_URL =
@@ -15,8 +15,6 @@ const MODEL_HEADERS: Record<string, string> = {
 	"gemini-2.5-pro": '[1,null,null,null,"4af6c7f5da75d65d",null,null,0,[4]]',
 	"gemini-2.5-flash": '[1,null,null,null,"9ec249fc9ad08861",null,null,0,[4]]',
 };
-
-const REQUIRED_COOKIES = ["__Secure-1PSID", "__Secure-1PSIDTS"];
 
 export interface GeminiWebOptions {
 	youtubeUrl?: string;
